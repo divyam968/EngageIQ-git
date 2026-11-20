@@ -206,23 +206,34 @@ function isVideoSummary(value: unknown): value is VideoSummary {
     typeof value.id === "string" &&
     typeof value.title === "string" &&
     typeof value.channelTitle === "string" &&
-    typeof value.views === "number" &&
-    typeof value.likes === "number" &&
-    typeof value.comments === "number" &&
-    typeof value.engagementRate === "number"
+    (typeof value.views === "number" || value.views === null) &&
+    (typeof value.likes === "number" || value.likes === null) &&
+    (typeof value.comments === "number" || value.comments === null) &&
+    (typeof value.engagementRate === "number" ||
+      value.engagementRate === null)
   )
 }
 
 function isVideoAnalysis(value: unknown): value is VideoAnalysis {
-  if (!isRecord(value) || !isRecord(value.sentiment)) return false
+  if (!isRecord(value)) return false
+  const sentimentIsValid =
+    value.sentiment === null ||
+    (isRecord(value.sentiment) &&
+      typeof value.sentiment.positive === "number" &&
+      typeof value.sentiment.neutral === "number" &&
+      typeof value.sentiment.negative === "number" &&
+      typeof value.sentiment.total === "number")
   return (
     isVideoSummary(value) &&
-    typeof value.sentiment.positive === "number" &&
-    typeof value.sentiment.neutral === "number" &&
-    typeof value.sentiment.negative === "number" &&
-    typeof value.sentiment.total === "number" &&
+    sentimentIsValid &&
+    typeof value.commentsAnalyzed === "number" &&
+    typeof value.insightSummary === "string" &&
+    Array.isArray(value.themes) &&
     Array.isArray(value.recommendations) &&
     Array.isArray(value.warnings) &&
+    (value.insightSource === "gemini" ||
+      value.insightSource === "rules" ||
+      value.insightSource === "demo") &&
     (value.source === "demo" || value.source === "youtube")
   )
 }
@@ -235,11 +246,20 @@ function errorFromPayload(payload: unknown): string {
 }
 
 async function postYouTube(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const response = await fetch("/api/youtube", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  })
+  let response: Response
+  try {
+    response = await fetch("/api/youtube", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(50_000),
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new Error("The request timed out. Please try again.")
+    }
+    throw new Error("The server could not be reached. Check your connection and retry.")
+  }
   let payload: unknown
 
   try {
@@ -261,8 +281,13 @@ function dateLabel(value: string): string {
     : date.toLocaleDateString("en-US")
 }
 
-function csvCell(value: string | number): string {
-  const text = String(value)
+function formatPercentage(value: number | null): string {
+  return value === null ? "Unavailable" : `${value.toFixed(2)}%`
+}
+
+function csvCell(value: string | number | null): string {
+  const raw = value === null ? "Unavailable" : String(value)
+  const text = /^[\t\r\n ]*[=+\-@]/.test(raw) ? `'${raw}` : raw
   return `"${text.replaceAll('"', '""')}"`
 }
 
@@ -270,12 +295,16 @@ function Sidebar({
   view,
   mobileOpen,
   liveConfigured,
+  aiConfigured,
+  statusUnavailable,
   onNavigate,
   onClose,
 }: {
   view: WorkspaceView
   mobileOpen: boolean
   liveConfigured: boolean
+  aiConfigured: boolean
+  statusUnavailable: boolean
   onNavigate: (view: WorkspaceView) => void
   onClose: () => void
 }) {
@@ -333,10 +362,22 @@ function Sidebar({
         <div className="sidebar-status">
           <div className="status-heading">
             <span className={`status-dot${liveConfigured ? " status-live" : ""}`} />
-            {liveConfigured ? "Live data ready" : "Demo mode ready"}
+            {statusUnavailable
+              ? "API status unavailable"
+              : liveConfigured
+              ? aiConfigured
+                ? "YouTube + Gemini ready"
+                : "YouTube data ready"
+                : "Demo mode ready"}
           </div>
           <p>
-            YouTube API data is used when credentials and quota are available.
+            {statusUnavailable
+              ? "The server status could not be checked. Live requests report their own setup errors."
+              : liveConfigured
+              ? aiConfigured
+                  ? "Live YouTube data and Gemini audience insights are enabled."
+                  : "Live YouTube data is enabled; insights use transparent rules."
+                : "Sample analysis works offline. Configure server keys for live data."}
           </p>
         </div>
       </aside>
@@ -379,10 +420,15 @@ function AnalysisDashboard({
     { label: "Likes", value: analysis.likes, icon: "likes" as const },
     { label: "Comments", value: analysis.comments, icon: "comments" as const },
   ]
-  const largestValue = Math.max(...performance.map((item) => item.value), 1)
-  const sentimentStyle = {
-    background: `conic-gradient(var(--positive) 0 ${analysis.sentiment.positive}%, var(--neutral) ${analysis.sentiment.positive}% ${analysis.sentiment.positive + analysis.sentiment.neutral}%, var(--negative) ${analysis.sentiment.positive + analysis.sentiment.neutral}% 100%)`,
-  }
+  const largestValue = Math.max(
+    ...performance.map((item) => item.value ?? 0),
+    1,
+  )
+  const sentimentStyle = analysis.sentiment
+    ? {
+        background: `conic-gradient(var(--positive) 0 ${analysis.sentiment.positive}%, var(--neutral) ${analysis.sentiment.positive}% ${analysis.sentiment.positive + analysis.sentiment.neutral}%, var(--negative) ${analysis.sentiment.positive + analysis.sentiment.neutral}% 100%)`,
+      }
+    : undefined
 
   return (
     <div className="analysis-results">
@@ -429,7 +475,7 @@ function AnalysisDashboard({
         <MetricCard
           icon="rate"
           label="Engagement rate"
-          value={`${analysis.engagementRate.toFixed(2)}%`}
+          value={formatPercentage(analysis.engagementRate)}
           caption="Opportunity"
           tone="tone-amber"
         />
@@ -456,7 +502,12 @@ function AnalysisDashboard({
                   <span className="bar-track">
                     <span
                       className={`bar-fill bar-${item.label.toLowerCase()}`}
-                      style={{ width: `${Math.max(4, (item.value / largestValue) * 100)}%` }}
+                      style={{
+                        width:
+                          item.value === null
+                            ? "0%"
+                            : `${Math.max(4, (item.value / largestValue) * 100)}%`,
+                      }}
                     />
                   </span>
                 </div>
@@ -468,40 +519,77 @@ function AnalysisDashboard({
         <article className="panel chart-card">
           <div className="card-title-row">
             <div>
-              <p className="card-kicker">AI classification</p>
+              <p className="card-kicker">
+                {analysis.insightSource === "gemini"
+                  ? "Gemini sentiment"
+                  : analysis.insightSource === "demo"
+                    ? "Sample sentiment"
+                    : "Rule-based sentiment"}
+              </p>
               <h3>Comment sentiment</h3>
             </div>
-            <span className="card-status">{analysis.sentiment.total} sampled</span>
+            <span className="card-status">
+              {analysis.sentiment
+                ? `${analysis.commentsAnalyzed} analyzed`
+                : "Unavailable"}
+            </span>
           </div>
-          <div className="sentiment-content">
-            <div
-              aria-label={`${analysis.sentiment.positive}% positive, ${analysis.sentiment.neutral}% neutral, ${analysis.sentiment.negative}% negative`}
-              className="sentiment-donut"
-              role="img"
-              style={sentimentStyle}
-            >
-              <span>
-                <strong>{analysis.sentiment.total}</strong>
-                <small>comments</small>
-              </span>
+          {analysis.sentiment ? (
+            <div className="sentiment-content">
+              <div
+                aria-label={`${analysis.sentiment.positive}% positive, ${analysis.sentiment.neutral}% neutral, ${analysis.sentiment.negative}% negative`}
+                className="sentiment-donut"
+                role="img"
+                style={sentimentStyle}
+              >
+                <span>
+                  <strong>{analysis.sentiment.total}</strong>
+                  <small>comments</small>
+                </span>
+              </div>
+              <ul className="sentiment-legend">
+                <li><i className="legend-positive" /><span>Positive</span><strong>{analysis.sentiment.positive}%</strong></li>
+                <li><i className="legend-neutral" /><span>Neutral</span><strong>{analysis.sentiment.neutral}%</strong></li>
+                <li><i className="legend-negative" /><span>Negative</span><strong>{analysis.sentiment.negative}%</strong></li>
+              </ul>
             </div>
-            <ul className="sentiment-legend">
-              <li><i className="legend-positive" /><span>Positive</span><strong>{analysis.sentiment.positive}%</strong></li>
-              <li><i className="legend-neutral" /><span>Neutral</span><strong>{analysis.sentiment.neutral}%</strong></li>
-              <li><i className="legend-negative" /><span>Negative</span><strong>{analysis.sentiment.negative}%</strong></li>
-            </ul>
-          </div>
+          ) : (
+            <p className="sentiment-unavailable">
+              No public comments were available to classify.
+            </p>
+          )}
         </article>
       </section>
 
       <section className="panel recommendations">
         <div className="card-title-row">
           <div>
-            <p className="card-kicker">Next best actions</p>
-            <h3>Intelligent recommendations</h3>
+            <p className="card-kicker">
+              {analysis.insightSource === "gemini"
+                ? "Gemini AI analysis"
+                : analysis.insightSource === "demo"
+                  ? "Sample demo insights"
+                  : "Transparent rule-based analysis"}
+            </p>
+            <h3>Audience insights</h3>
           </div>
-          <span className="card-status">Prioritized</span>
+          <span className="card-status">
+            {analysis.insightSource === "gemini"
+              ? "AI generated"
+              : analysis.insightSource === "demo"
+                ? "Illustrative"
+                : "Data-derived"}
+          </span>
         </div>
+        <p className="insight-summary">{analysis.insightSummary}</p>
+        {analysis.themes.length > 0 && (
+          <div className="insight-themes" aria-label="Recurring audience themes">
+            {analysis.themes.map((theme) => (
+              <span className="insight-theme" key={theme}>{theme}</span>
+            ))}
+          </div>
+        )}
+        <h4 className="recommendation-heading">Recommended next steps</h4>
         <ol className="recommendation-list">
           {analysis.recommendations.map((recommendation, index) => (
             <li key={recommendation}>
@@ -519,6 +607,7 @@ function OverviewPanel({
   input,
   busy,
   error,
+  aiConfigured,
   onInput,
   onSubmit,
   onDemo,
@@ -526,17 +615,18 @@ function OverviewPanel({
   input: string
   busy: boolean
   error: string
+  aiConfigured: boolean
   onInput: (value: string) => void
   onSubmit: (event: FormEvent<HTMLFormElement>) => void
   onDemo: () => void
 }) {
   return (
     <section aria-labelledby="overview-title" className="panel hero-panel">
-      <span className="eyebrow-pill"><Icon name="spark" size={15} /> AI-powered creator intelligence</span>
+      <span className="eyebrow-pill"><Icon name="spark" size={15} /> {aiConfigured ? "Gemini-powered audience intelligence" : "YouTube engagement intelligence"}</span>
       <h2 id="overview-title">Turn audience signals into your next breakthrough.</h2>
       <p className="panel-description">
-        Analyze real YouTube performance, understand comment sentiment, and get
-        actionable content recommendations in seconds.
+        Analyze live YouTube performance, understand public comment sentiment,
+        and get recommendations grounded in the data available for each video.
       </p>
       <form className="analysis-form" onSubmit={onSubmit}>
         <label className="sr-only" htmlFor="overview-video-url">Paste a YouTube video URL</label>
@@ -554,7 +644,7 @@ function OverviewPanel({
       </form>
       {error && <p className="form-error" role="alert">{error}</p>}
       <button className="sample-link" onClick={onDemo} type="button">
-        Or analyze a sample video (demo fallback if offline)
+        Try the clearly labeled sample demo
       </button>
     </section>
   )
@@ -579,7 +669,7 @@ function VideoAnalyzerPanel({
       <h2 id="video-analyzer-title">Analyze any public YouTube video</h2>
       <p className="panel-description">
         Paste a watch, Shorts, or youtu.be link. We securely request statistics
-        and up to 100 top-level comments through the server.
+        and up to 200 relevant public comments through the server.
       </p>
       <form className="analysis-form labeled-form" onSubmit={onSubmit}>
         <label htmlFor="video-url">YouTube URL or video ID</label>
@@ -619,12 +709,30 @@ function ComparePanel({
   onAdd: () => void
   onCompare: (event: FormEvent<HTMLFormElement>) => void
 }) {
+  const [chartMetric, setChartMetric] = useState<
+    "engagementRate" | "views" | "likes" | "comments"
+  >("engagementRate")
+  const metricLabel = {
+    engagementRate: "Engagement rate",
+    views: "Views",
+    likes: "Likes",
+    comments: "Comments",
+  }[chartMetric]
+  const sortedResults = [...results].sort(
+    (left, right) =>
+      (right[chartMetric] ?? -1) - (left[chartMetric] ?? -1),
+  )
+  const chartMaximum = Math.max(
+    ...sortedResults.map((video) => video[chartMetric] ?? 0),
+    1,
+  )
+
   return (
     <section className="panel form-panel">
       <span className="eyebrow-pill">Side-by-side benchmarking</span>
       <h2>Compare up to four videos</h2>
       <p className="panel-description">
-        Identify the strongest engagement and sentiment patterns across public videos.
+        Compare live public metrics side by side and inspect their relative performance.
       </p>
       <form onSubmit={onCompare}>
         <div className="comparison-inputs">
@@ -655,15 +763,64 @@ function ComparePanel({
       {error && <p className="form-error" role="alert">{error}</p>}
       {results.length > 0 && (
         <div className="comparison-results">
-          <h3>Video comparison</h3>
+          <div className="card-title-row">
+            <h3>Video comparison</h3>
+            <label className="chart-control">
+              <span>Chart metric</span>
+              <select
+                onChange={(event) =>
+                  setChartMetric(
+                    event.target.value as typeof chartMetric,
+                  )
+                }
+                value={chartMetric}
+              >
+                <option value="engagementRate">Engagement rate</option>
+                <option value="views">Views</option>
+                <option value="likes">Likes</option>
+                <option value="comments">Comments</option>
+              </select>
+            </label>
+          </div>
+          <div
+            aria-label={`Compared videos ranked by ${metricLabel}`}
+            className="comparison-chart"
+            role="img"
+          >
+            {sortedResults.map((video) => {
+              const value = video[chartMetric]
+              const formattedValue =
+                chartMetric === "engagementRate"
+                  ? formatPercentage(value)
+                  : formatCompactNumber(value)
+              return (
+                <div className="comparison-chart-row" key={video.id}>
+                  <span className="comparison-chart-title">{video.title}</span>
+                  <span className="comparison-chart-track">
+                    <span
+                      style={{
+                        width:
+                          value === null
+                            ? "0%"
+                            : `${Math.max(3, (value / chartMaximum) * 100)}%`,
+                      }}
+                    />
+                  </span>
+                  <strong>{formattedValue}</strong>
+                </div>
+              )
+            })}
+          </div>
           <div className="comparison-grid">
             {results.map((video) => (
               <article className="comparison-card" key={video.id}>
                 <p className="card-kicker">{video.channelTitle}</p>
                 <h4>{video.title}</h4>
                 <div className="comparison-stat"><span>Views</span><strong>{formatCompactNumber(video.views)}</strong></div>
-                <div className="comparison-stat"><span>Engagement</span><strong>{video.engagementRate.toFixed(2)}%</strong></div>
-                <div className="comparison-bar"><span style={{ width: `${Math.max(5, Math.min(100, video.engagementRate * 20))}%` }} /></div>
+                <div className="comparison-stat"><span>Likes</span><strong>{formatCompactNumber(video.likes)}</strong></div>
+                <div className="comparison-stat"><span>Comments</span><strong>{formatCompactNumber(video.comments)}</strong></div>
+                <div className="comparison-stat"><span>Engagement</span><strong>{formatPercentage(video.engagementRate)}</strong></div>
+                <div className="comparison-bar"><span style={{ width: `${video.engagementRate === null ? 0 : Math.max(5, Math.min(100, video.engagementRate * 20))}%` }} /></div>
               </article>
             ))}
           </div>
@@ -742,7 +899,8 @@ function UploadPanel({
           <div className="dataset-metrics">
             <MetricCard icon="views" label="Total views" value={formatCompactNumber(dataset.totalViews)} caption="Reach" tone="tone-purple" />
             <MetricCard icon="likes" label="Total likes" value={formatCompactNumber(dataset.totalLikes)} caption="Affinity" tone="tone-cyan" />
-            <MetricCard icon="rate" label="Engagement rate" value={`${dataset.engagementRate.toFixed(2)}%`} caption="Opportunity" tone="tone-green" />
+            <MetricCard icon="comments" label="Total comments" value={formatCompactNumber(dataset.totalComments)} caption="Conversation" tone="tone-green" />
+            <MetricCard icon="rate" label="Engagement rate" value={formatPercentage(dataset.engagementRate)} caption="Opportunity" tone="tone-green" />
           </div>
           <div className="table-scroll">
             <table className="data-table">
@@ -768,19 +926,49 @@ function ChannelPanel({
   error,
   videos,
   channel,
+  trendingRegion,
+  trendingCategory,
+  trendingVideos,
+  trendingBusy,
+  trendingError,
   onQuery,
   onSearch,
   onChannel,
+  onTrendingRegion,
+  onTrendingCategory,
+  onLoadTrending,
+  onAnalyzeVideo,
 }: {
   query: string
   busy: boolean
   error: string
   videos: VideoSummary[]
   channel: ChannelAnalytics | null
+  trendingRegion: string
+  trendingCategory: string
+  trendingVideos: VideoSummary[]
+  trendingBusy: boolean
+  trendingError: string
   onQuery: (value: string) => void
   onSearch: (event: FormEvent<HTMLFormElement>) => void
   onChannel: () => void
+  onTrendingRegion: (value: string) => void
+  onTrendingCategory: (value: string) => void
+  onLoadTrending: () => void
+  onAnalyzeVideo: (videoId: string) => void
 }) {
+  const [trendMetric, setTrendMetric] = useState<"views" | "engagementRate">(
+    "engagementRate",
+  )
+  const rankedTrending = [...trendingVideos].sort(
+    (left, right) =>
+      (right[trendMetric] ?? -1) - (left[trendMetric] ?? -1),
+  )
+  const maximumTrendValue = Math.max(
+    ...rankedTrending.map((video) => video[trendMetric] ?? 0),
+    1,
+  )
+
   return (
     <section className="panel form-panel">
       <span className="eyebrow-pill">Public YouTube discovery</span>
@@ -806,21 +994,51 @@ function ChannelPanel({
       {busy && <p className="loading-message" role="status">Searching public YouTube data…</p>}
       {error && <p className="form-error" role="alert">{error}</p>}
       {channel && (
-        <article className="channel-result">
-          <div className="channel-avatar">
-            {channel.thumbnailUrl ? <img alt="" src={channel.thumbnailUrl} /> : <Icon name="brand" size={24} />}
-          </div>
-          <div className="channel-copy">
-            <p className="card-kicker">{channel.handle ? `@${channel.handle.replace(/^@/, "")}` : "YouTube channel"}</p>
-            <h3>{channel.title}</h3>
-            {channel.description && <p>{channel.description}</p>}
-          </div>
-          <div className="channel-stats">
-            <span><strong>{channel.subscribers === null ? "Hidden" : formatCompactNumber(channel.subscribers)}</strong> subscribers</span>
-            <span><strong>{formatCompactNumber(channel.views)}</strong> views</span>
-            <span><strong>{formatCompactNumber(channel.videos)}</strong> videos</span>
-          </div>
-        </article>
+        <>
+          <article className="channel-result">
+            <div className="channel-avatar">
+              {channel.thumbnailUrl ? <img alt="" src={channel.thumbnailUrl} /> : <Icon name="brand" size={24} />}
+            </div>
+            <div className="channel-copy">
+              <p className="card-kicker">{channel.handle ? `@${channel.handle.replace(/^@/, "")}` : "YouTube channel"}</p>
+              <h3>{channel.title}</h3>
+              {channel.description && <p>{channel.description}</p>}
+            </div>
+            <div className="channel-stats">
+              <span><strong>{channel.subscribers === null ? "Hidden" : formatCompactNumber(channel.subscribers)}</strong> subscribers</span>
+              <span><strong>{formatCompactNumber(channel.views)}</strong> views</span>
+              <span><strong>{formatCompactNumber(channel.videos)}</strong> videos</span>
+            </div>
+          </article>
+          {channel.recentVideosWarning && (
+            <p className="inline-warning" role="status">{channel.recentVideosWarning}</p>
+          )}
+          {channel.recentVideos.length > 0 && (
+            <div className="recent-videos">
+              <div className="dataset-heading">
+                <div><p className="card-kicker">Uploads playlist</p><h3>Recent public videos</h3></div>
+                <span className="card-status">{channel.recentVideos.length} videos</span>
+              </div>
+              {channel.recentVideos.map((video) => (
+                <article className="search-result" key={video.id}>
+                  {video.thumbnailUrl ? <img alt="" src={video.thumbnailUrl} /> : <span className="thumbnail-placeholder"><Icon name="play" /></span>}
+                  <div>
+                    <h4>{video.title}</h4>
+                    <p>{formatCompactNumber(video.views)} views · {formatPercentage(video.engagementRate)} engagement</p>
+                  </div>
+                  <button
+                    aria-label={`Analyze ${video.title}`}
+                    className="button button-outline result-analyze"
+                    onClick={() => onAnalyzeVideo(video.id)}
+                    type="button"
+                  >
+                    Analyze
+                  </button>
+                </article>
+              ))}
+            </div>
+          )}
+        </>
       )}
       {videos.length > 0 && (
         <div className="search-results">
@@ -834,14 +1052,148 @@ function ChannelPanel({
                 {video.thumbnailUrl ? <img alt="" src={video.thumbnailUrl} /> : <span className="thumbnail-placeholder"><Icon name="play" /></span>}
                 <div>
                   <h4>{video.title}</h4>
-                  <p>{video.channelTitle} · {formatCompactNumber(video.views)} views</p>
+                  <p>{video.channelTitle} · {formatCompactNumber(video.views)} views · {formatPercentage(video.engagementRate)} engagement</p>
                 </div>
-                <span className="search-engagement">{video.engagementRate.toFixed(2)}%</span>
+                <button
+                  aria-label={`Analyze ${video.title}`}
+                  className="button button-outline result-analyze"
+                  onClick={() => onAnalyzeVideo(video.id)}
+                  type="button"
+                >
+                  Analyze
+                </button>
               </article>
             ))}
           </div>
         </div>
       )}
+      <section aria-labelledby="trending-title" className="trending-section">
+        <div className="card-title-row">
+          <div>
+            <p className="card-kicker">YouTube most-popular chart</p>
+            <h3 id="trending-title">Trending content analysis</h3>
+          </div>
+          <span className="card-status">Live API data</span>
+        </div>
+        <p className="panel-description">
+          Explore YouTube&apos;s current public most-popular list by region and category.
+          This is a snapshot, not a historical growth measure.
+        </p>
+        <div className="trending-controls">
+          <label>
+            <span>Region</span>
+            <select
+              onChange={(event) => onTrendingRegion(event.target.value)}
+              value={trendingRegion}
+            >
+              <option value="IN">India</option>
+              <option value="US">United States</option>
+              <option value="GB">United Kingdom</option>
+              <option value="CA">Canada</option>
+              <option value="AU">Australia</option>
+              <option value="JP">Japan</option>
+            </select>
+          </label>
+          <label>
+            <span>Category</span>
+            <select
+              onChange={(event) => onTrendingCategory(event.target.value)}
+              value={trendingCategory}
+            >
+              <option value="">All categories</option>
+              <option value="10">Music</option>
+              <option value="20">Gaming</option>
+              <option value="17">Sports</option>
+              <option value="24">Entertainment</option>
+              <option value="25">News & politics</option>
+              <option value="27">Education</option>
+              <option value="28">Science & technology</option>
+            </select>
+          </label>
+          <button
+            className="button button-primary"
+            disabled={trendingBusy}
+            onClick={onLoadTrending}
+            type="button"
+          >
+            {trendingBusy ? "Loading trends…" : "Load trending"}
+          </button>
+        </div>
+        {trendingError && <p className="form-error" role="alert">{trendingError}</p>}
+        {rankedTrending.length > 0 && (
+          <div className="trending-results">
+            <div className="card-title-row">
+              <div>
+                <p className="card-kicker">{trendingRegion} · {rankedTrending.length} live results</p>
+                <h4>Rank videos by</h4>
+              </div>
+              <label className="chart-control">
+                <span>Chart metric</span>
+                <select
+                  onChange={(event) =>
+                    setTrendMetric(
+                      event.target.value as typeof trendMetric,
+                    )
+                  }
+                  value={trendMetric}
+                >
+                  <option value="engagementRate">Engagement rate</option>
+                  <option value="views">Views</option>
+                </select>
+              </label>
+            </div>
+            <div
+              aria-label={`Trending videos ranked by ${trendMetric === "views" ? "views" : "engagement rate"}`}
+              className="trending-chart"
+              role="img"
+            >
+              {rankedTrending.map((video, index) => {
+                const value = video[trendMetric]
+                const label =
+                  trendMetric === "views"
+                    ? formatCompactNumber(value)
+                    : formatPercentage(value)
+                return (
+                  <div className="trending-chart-row" key={video.id}>
+                    <span className="trending-rank">{index + 1}</span>
+                    <span className="trending-title">{video.title}</span>
+                    <span className="trending-track">
+                      <span
+                        style={{
+                          width:
+                            value === null
+                              ? "0%"
+                              : `${Math.max(3, (value / maximumTrendValue) * 100)}%`,
+                        }}
+                      />
+                    </span>
+                    <strong>{label}</strong>
+                  </div>
+                )
+              })}
+            </div>
+            <div className="search-result-list">
+              {rankedTrending.map((video) => (
+                <article className="search-result" key={video.id}>
+                  {video.thumbnailUrl ? <img alt="" src={video.thumbnailUrl} /> : <span className="thumbnail-placeholder"><Icon name="play" /></span>}
+                  <div>
+                    <h4>{video.title}</h4>
+                    <p>{video.channelTitle} · {formatCompactNumber(video.views)} views · {formatPercentage(video.engagementRate)} engagement</p>
+                  </div>
+                  <button
+                    aria-label={`Analyze ${video.title}`}
+                    className="button button-outline result-analyze"
+                    onClick={() => onAnalyzeVideo(video.id)}
+                    type="button"
+                  >
+                    Analyze
+                  </button>
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
     </section>
   )
 }
@@ -884,8 +1236,8 @@ function HistoryPanel({
                 <tr key={`${entry.id}-${entry.analyzedAt}`}>
                   <td>{entry.title}</td>
                   <td>{formatCompactNumber(entry.views)}</td>
-                  <td>{entry.engagementRate.toFixed(2)}%</td>
-                  <td>{entry.positiveSentiment}% positive</td>
+                  <td>{formatPercentage(entry.engagementRate)}</td>
+                  <td>{entry.positiveSentiment === null ? "Unavailable" : `${entry.positiveSentiment}% positive`}</td>
                   <td>{new Date(entry.analyzedAt).toLocaleString()}</td>
                 </tr>
               ))}
@@ -902,6 +1254,8 @@ export default function EngageIQDashboard() {
   const [theme, setTheme] = useState<Theme>("dark")
   const [mobileOpen, setMobileOpen] = useState(false)
   const [liveConfigured, setLiveConfigured] = useState(false)
+  const [aiConfigured, setAiConfigured] = useState(false)
+  const [statusUnavailable, setStatusUnavailable] = useState(false)
   const [analysis, setAnalysis] = useState<VideoAnalysis | null>(null)
   const [analysisInput, setAnalysisInput] = useState("")
   const [analysisBusy, setAnalysisBusy] = useState(false)
@@ -917,6 +1271,11 @@ export default function EngageIQDashboard() {
   const [channel, setChannel] = useState<ChannelAnalytics | null>(null)
   const [discoveryBusy, setDiscoveryBusy] = useState(false)
   const [discoveryError, setDiscoveryError] = useState("")
+  const [trendingRegion, setTrendingRegion] = useState("IN")
+  const [trendingCategory, setTrendingCategory] = useState("")
+  const [trendingVideos, setTrendingVideos] = useState<VideoSummary[]>([])
+  const [trendingBusy, setTrendingBusy] = useState(false)
+  const [trendingError, setTrendingError] = useState("")
   const [dataset, setDataset] = useState<DatasetSummary | null>(null)
   const [datasetError, setDatasetError] = useState("")
   const [dragActive, setDragActive] = useState(false)
@@ -938,9 +1297,16 @@ export default function EngageIQDashboard() {
       .then(async (response) => {
         if (!response.ok) throw new Error("API status is unavailable.")
         const status: unknown = await response.json()
-        if (isRecord(status)) setLiveConfigured(status.liveConfigured === true)
+        if (isRecord(status)) {
+          setLiveConfigured(status.liveConfigured === true)
+          setAiConfigured(status.aiConfigured === true)
+        }
       })
-      .catch(() => setLiveConfigured(false))
+      .catch(() => {
+        setLiveConfigured(false)
+        setAiConfigured(false)
+        setStatusUnavailable(true)
+      })
   }, [])
 
   function navigate(nextView: WorkspaceView) {
@@ -955,7 +1321,7 @@ export default function EngageIQDashboard() {
       title: result.title,
       views: result.views,
       engagementRate: result.engagementRate,
-      positiveSentiment: result.sentiment.positive,
+      positiveSentiment: result.sentiment?.positive ?? null,
       analyzedAt: new Date().toISOString(),
     }
     const next = [entry, ...history].slice(0, 20)
@@ -1098,8 +1464,9 @@ export default function EngageIQDashboard() {
         typeof result.handle !== "string" ||
         typeof result.description !== "string" ||
         (typeof result.subscribers !== "number" && result.subscribers !== null) ||
-        typeof result.views !== "number" ||
-        typeof result.videos !== "number"
+        (typeof result.views !== "number" && result.views !== null) ||
+        (typeof result.videos !== "number" && result.videos !== null) ||
+        !Array.isArray(result.recentVideos)
       ) {
         throw new Error("The server returned incomplete channel analytics.")
       }
@@ -1113,6 +1480,11 @@ export default function EngageIQDashboard() {
         subscribers: result.subscribers,
         views: result.views,
         videos: result.videos,
+        recentVideos: result.recentVideos.filter(isVideoSummary),
+        recentVideosWarning:
+          typeof result.recentVideosWarning === "string"
+            ? result.recentVideosWarning
+            : undefined,
       })
     } catch (error) {
       setDiscoveryError(
@@ -1121,6 +1493,40 @@ export default function EngageIQDashboard() {
     } finally {
       setDiscoveryBusy(false)
     }
+  }
+
+  async function loadTrendingVideos() {
+    setTrendingError("")
+    setTrendingBusy(true)
+    setTrendingVideos([])
+    try {
+      const response = await postYouTube({
+        action: "trending",
+        regionCode: trendingRegion,
+        categoryId: trendingCategory,
+      })
+      const results = Array.isArray(response.videos)
+        ? response.videos.filter(isVideoSummary)
+        : []
+      if (results.length === 0) {
+        setTrendingError("YouTube returned no most-popular videos for these filters.")
+      }
+      setTrendingVideos(results)
+    } catch (error) {
+      setTrendingError(
+        error instanceof Error
+          ? error.message
+          : "Trending videos could not be loaded.",
+      )
+    } finally {
+      setTrendingBusy(false)
+    }
+  }
+
+  function openVideoAnalysis(videoId: string) {
+    setAnalysisInput(videoId)
+    setAnalysisError("")
+    setView("Video analyzer")
   }
 
   async function processFile(file: File | null) {
@@ -1162,14 +1568,20 @@ export default function EngageIQDashboard() {
       ["Video", analysis.title],
       ["Channel", analysis.channelTitle],
       ["Video ID", analysis.id],
+      ["Data source", analysis.source === "demo" ? "Sample demo" : "Live YouTube Data API"],
+      ["Insight method", analysis.insightSource],
       ["Views", analysis.views],
       ["Likes", analysis.likes],
       ["Comments", analysis.comments],
-      ["Engagement rate", `${analysis.engagementRate.toFixed(2)}%`],
-      ["Positive sentiment", `${analysis.sentiment.positive}%`],
-      ["Neutral sentiment", `${analysis.sentiment.neutral}%`],
-      ["Negative sentiment", `${analysis.sentiment.negative}%`],
+      ["Engagement rate", formatPercentage(analysis.engagementRate)],
+      ["Comments analyzed", analysis.commentsAnalyzed],
+      ["Positive sentiment", analysis.sentiment ? `${analysis.sentiment.positive}%` : "Unavailable"],
+      ["Neutral sentiment", analysis.sentiment ? `${analysis.sentiment.neutral}%` : "Unavailable"],
+      ["Negative sentiment", analysis.sentiment ? `${analysis.sentiment.negative}%` : "Unavailable"],
+      ["Audience insight", analysis.insightSummary],
+      ...analysis.themes.map((theme, index) => [`Audience theme ${index + 1}`, theme]),
       ...analysis.recommendations.map((item, index) => [`Recommendation ${index + 1}`, item]),
+      ...analysis.warnings.map((warning, index) => [`Warning ${index + 1}`, warning]),
     ]
     const csv = rows.map((row) => row.map(csvCell).join(",")).join("\r\n")
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" })
@@ -1177,8 +1589,10 @@ export default function EngageIQDashboard() {
     const link = document.createElement("a")
     link.href = url
     link.download = `engageiq-${analysis.id}-report.csv`
+    document.body.append(link)
     link.click()
-    URL.revokeObjectURL(url)
+    link.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   }
 
   function setCompareInput(index: number, value: string) {
@@ -1202,10 +1616,12 @@ export default function EngageIQDashboard() {
   return (
     <div className={`dashboard theme-${theme}`}>
       <Sidebar
+        aiConfigured={aiConfigured}
         liveConfigured={liveConfigured}
         mobileOpen={mobileOpen}
         onClose={() => setMobileOpen(false)}
         onNavigate={navigate}
+        statusUnavailable={statusUnavailable}
         view={view}
       />
       <div className="workspace">
@@ -1247,6 +1663,7 @@ export default function EngageIQDashboard() {
               <AnalysisDashboard analysis={analysis} onNewAnalysis={startNewAnalysis} />
             ) : (
               <OverviewPanel
+                aiConfigured={aiConfigured}
                 busy={analysisBusy}
                 error={analysisError}
                 input={analysisInput}
@@ -1305,9 +1722,26 @@ export default function EngageIQDashboard() {
               channel={channel}
               error={discoveryError}
               onChannel={() => void inspectChannel()}
+              onAnalyzeVideo={openVideoAnalysis}
+              onLoadTrending={() => void loadTrendingVideos()}
               onQuery={setSearchQuery}
               onSearch={searchVideos}
+              onTrendingCategory={(value) => {
+                setTrendingCategory(value)
+                setTrendingVideos([])
+                setTrendingError("")
+              }}
+              onTrendingRegion={(value) => {
+                setTrendingRegion(value)
+                setTrendingVideos([])
+                setTrendingError("")
+              }}
               query={searchQuery}
+              trendingBusy={trendingBusy}
+              trendingCategory={trendingCategory}
+              trendingError={trendingError}
+              trendingRegion={trendingRegion}
+              trendingVideos={trendingVideos}
               videos={searchResults}
             />
           )}

@@ -11,16 +11,20 @@ export interface VideoSummary {
   channelTitle: string
   publishedAt: string
   thumbnailUrl?: string
-  views: number
-  likes: number
-  comments: number
-  engagementRate: number
+  views: number | null
+  likes: number | null
+  comments: number | null
+  engagementRate: number | null
 }
 
 export interface VideoAnalysis extends VideoSummary {
-  sentiment: SentimentSummary
+  sentiment: SentimentSummary | null
+  commentsAnalyzed: number
+  insightSummary: string
+  themes: string[]
   recommendations: string[]
   warnings: string[]
+  insightSource: "gemini" | "rules" | "demo"
   source: "demo" | "youtube"
 }
 
@@ -31,16 +35,18 @@ export interface ChannelAnalytics {
   description: string
   thumbnailUrl?: string
   subscribers: number | null
-  views: number
-  videos: number
+  views: number | null
+  videos: number | null
+  recentVideos: VideoSummary[]
+  recentVideosWarning?: string
 }
 
 export interface AnalysisHistoryEntry {
   id: string
   title: string
-  views: number
-  engagementRate: number
-  positiveSentiment: number
+  views: number | null
+  engagementRate: number | null
+  positiveSentiment: number | null
   analyzedAt: string
 }
 
@@ -54,12 +60,36 @@ export const demoAnalysis: VideoAnalysis = {
   comments: 2_500_000,
   engagementRate: 1.19,
   sentiment: { positive: 7, neutral: 92, negative: 1, total: 100 },
+  commentsAnalyzed: 100,
+  insightSummary:
+    "This is a clearly labeled sample snapshot. Its figures and recommendations are illustrative, not live YouTube data.",
+  themes: ["Sample audience theme"],
   recommendations: [
     "Strengthen the first 15 seconds and add a specific comment prompt to lift interaction.",
     "Positive sentiment is leading; feature a strong viewer quote in your next community post.",
   ],
   warnings: [],
+  insightSource: "demo",
   source: "demo",
+}
+
+export function calculateEngagementRate(
+  views: number | null,
+  likes: number | null,
+  comments: number | null,
+): number | null {
+  if (
+    views === null ||
+    likes === null ||
+    comments === null ||
+    views <= 0 ||
+    !Number.isFinite(views) ||
+    !Number.isFinite(likes) ||
+    !Number.isFinite(comments)
+  ) {
+    return null
+  }
+  return ((likes + comments) / views) * 100
 }
 
 export function parseYouTubeVideoId(value: string): string | null {
@@ -90,7 +120,8 @@ export function parseYouTubeVideoId(value: string): string | null {
   }
 }
 
-export function formatCompactNumber(value: number): string {
+export function formatCompactNumber(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "—"
   return new Intl.NumberFormat("en", {
     notation: "compact",
     maximumFractionDigits: 1,
@@ -103,9 +134,10 @@ export function isHistoryEntry(value: unknown): value is AnalysisHistoryEntry {
   return (
     typeof entry.id === "string" &&
     typeof entry.title === "string" &&
-    typeof entry.views === "number" &&
-    typeof entry.engagementRate === "number" &&
-    typeof entry.positiveSentiment === "number" &&
+    (typeof entry.views === "number" || entry.views === null) &&
+    (typeof entry.engagementRate === "number" || entry.engagementRate === null) &&
+    (typeof entry.positiveSentiment === "number" ||
+      entry.positiveSentiment === null) &&
     typeof entry.analyzedAt === "string"
   )
 }
