@@ -231,7 +231,7 @@ function isVideoAnalysis(value: unknown): value is VideoAnalysis {
     Array.isArray(value.themes) &&
     Array.isArray(value.recommendations) &&
     Array.isArray(value.warnings) &&
-    (value.insightSource === "openai" ||
+    (value.insightSource === "openrouter" ||
       value.insightSource === "rules" ||
       value.insightSource === "demo") &&
     (value.source === "demo" || value.source === "youtube")
@@ -366,7 +366,7 @@ function Sidebar({
               ? "API status unavailable"
               : liveConfigured
               ? aiConfigured
-                ? "YouTube + OpenAI ready"
+                ? "YouTube + OpenRouter ready"
                 : "YouTube data ready"
                 : "Demo mode ready"}
           </div>
@@ -375,7 +375,7 @@ function Sidebar({
               ? "The server status could not be checked. Live requests report their own setup errors."
               : liveConfigured
               ? aiConfigured
-                  ? "Live YouTube data and OpenAI audience insights are enabled."
+                  ? "Live YouTube data and OpenRouter audience insights are enabled."
                   : "Live YouTube data is enabled; insights use transparent rules."
                 : "Sample analysis works offline. Configure server keys for live data."}
           </p>
@@ -520,8 +520,8 @@ function AnalysisDashboard({
           <div className="card-title-row">
             <div>
               <p className="card-kicker">
-                {analysis.insightSource === "openai"
-                  ? "OpenAI sentiment"
+                {analysis.insightSource === "openrouter"
+                  ? "OpenRouter sentiment"
                   : analysis.insightSource === "demo"
                     ? "Sample sentiment"
                     : "Rule-based sentiment"}
@@ -565,8 +565,8 @@ function AnalysisDashboard({
         <div className="card-title-row">
           <div>
             <p className="card-kicker">
-              {analysis.insightSource === "openai"
-                ? "OpenAI analysis"
+              {analysis.insightSource === "openrouter"
+                ? "OpenRouter analysis"
                 : analysis.insightSource === "demo"
                   ? "Sample demo insights"
                   : "Transparent rule-based analysis"}
@@ -574,7 +574,7 @@ function AnalysisDashboard({
             <h3>Audience insights</h3>
           </div>
           <span className="card-status">
-            {analysis.insightSource === "openai"
+            {analysis.insightSource === "openrouter"
               ? "AI generated"
               : analysis.insightSource === "demo"
                 ? "Illustrative"
@@ -622,7 +622,7 @@ function OverviewPanel({
 }) {
   return (
     <section aria-labelledby="overview-title" className="panel hero-panel">
-      <span className="eyebrow-pill"><Icon name="spark" size={15} /> {aiConfigured ? "OpenAI-powered audience intelligence" : "YouTube engagement intelligence"}</span>
+      <span className="eyebrow-pill"><Icon name="spark" size={15} /> {aiConfigured ? "OpenRouter-powered audience intelligence" : "YouTube engagement intelligence"}</span>
       <h2 id="overview-title">Turn audience signals into your next breakthrough.</h2>
       <p className="panel-description">
         Analyze live YouTube performance, understand public comment sentiment,

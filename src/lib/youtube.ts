@@ -24,7 +24,7 @@ export interface VideoAnalysis extends VideoSummary {
   themes: string[]
   recommendations: string[]
   warnings: string[]
-  insightSource: "openai" | "rules" | "demo"
+  insightSource: "openrouter" | "rules" | "demo"
   source: "demo" | "youtube"
 }
 

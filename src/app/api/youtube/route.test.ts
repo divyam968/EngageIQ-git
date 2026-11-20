@@ -40,32 +40,32 @@ afterEach(() => {
 describe("YouTube route handler", () => {
   it("reports configuration without exposing credentials", async () => {
     vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
-    vi.stubEnv("OPENAI_API_KEY", "")
-    vi.stubEnv("OPENAI_MODEL", "")
+    vi.stubEnv("OPENROUTER_API_KEY", "")
+    vi.stubEnv("OPENROUTER_MODEL", "")
 
     const result = await (await GET()).json()
 
     expect(result).toEqual({
       liveConfigured: true,
       aiConfigured: false,
-      aiModel: "gpt-4o-mini",
+      aiModel: "openrouter/free",
     })
     expect(JSON.stringify(result)).not.toContain("test-youtube-key")
   })
 
-  it("reports OpenAI configured using the server-side key without exposing it", async () => {
+  it("reports OpenRouter configured using the server-side key without exposing it", async () => {
     vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
-    vi.stubEnv("OPENAI_API_KEY", "test-openai-key")
-    vi.stubEnv("OPENAI_MODEL", "gpt-4o-mini")
+    vi.stubEnv("OPENROUTER_API_KEY", "test-openrouter-key")
+    vi.stubEnv("OPENROUTER_MODEL", "openrouter/free")
 
     const result = await (await GET()).json()
 
     expect(result).toMatchObject({
       liveConfigured: true,
       aiConfigured: true,
-      aiModel: "gpt-4o-mini",
+      aiModel: "openrouter/free",
     })
-    expect(JSON.stringify(result)).not.toContain("test-openai-key")
+    expect(JSON.stringify(result)).not.toContain("test-openrouter-key")
   })
 
   it("returns a clear missing-YouTube-key error", async () => {
@@ -81,7 +81,7 @@ describe("YouTube route handler", () => {
 
   it("limits repeated requests from the same client", async () => {
     vi.stubEnv("YOUTUBE_API_KEY", "")
-    vi.stubEnv("OPENAI_API_KEY", "")
+    vi.stubEnv("OPENROUTER_API_KEY", "")
     const clientIp = `198.51.100.${Math.floor(Math.random() * 200) + 1}`
     const makeRequest = () =>
       new Request("http://localhost/api/youtube", {
@@ -104,7 +104,7 @@ describe("YouTube route handler", () => {
 
   it("analyzes real-shaped video statistics and public comments with explicit rule fallback", async () => {
     vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
-    vi.stubEnv("OPENAI_API_KEY", "")
+    vi.stubEnv("OPENROUTER_API_KEY", "")
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string | URL | Request) => {
@@ -144,7 +144,69 @@ describe("YouTube route handler", () => {
       source: "youtube",
     })
     expect(payload.analysis.sentiment.total).toBe(3)
-    expect(payload.analysis.warnings.join(" ")).toContain("OpenAI is not configured")
+    expect(payload.analysis.warnings.join(" ")).toContain("OpenRouter is not configured")
+  })
+
+  it("uses OpenRouter structured insights for live video analysis", async () => {
+    vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
+    vi.stubEnv("OPENROUTER_API_KEY", "test-openrouter-key")
+    const providerInsight = {
+      sentiment: { positive: 1, negative: 1 },
+      summary: "Viewers liked the examples but noted the pacing.",
+      themes: ["examples"],
+      recommendations: [
+        "Keep practical examples.",
+        "Tighten the transitions.",
+      ],
+    }
+    let openRouterAuthorization: string | null = null
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = new URL(
+          input instanceof Request ? input.url : input.toString(),
+        )
+        if (url.hostname === "openrouter.ai") {
+          openRouterAuthorization = new Headers(init?.headers).get(
+            "Authorization",
+          )
+          return response({
+            choices: [
+              { message: { content: JSON.stringify(providerInsight) } },
+            ],
+          })
+        }
+        if (url.pathname.endsWith("/videos")) {
+          return response({ items: [videoItem(firstVideoId)] })
+        }
+        if (url.pathname.endsWith("/commentThreads")) {
+          return response({
+            items: [
+              { snippet: { topLevelComment: { snippet: { textOriginal: "Great video" } } } },
+              { snippet: { topLevelComment: { snippet: { textOriginal: "This was boring" } } } },
+              { snippet: { topLevelComment: { snippet: { textOriginal: "What comes next?" } } } },
+            ],
+          })
+        }
+        throw new Error("Unexpected test URL")
+      }),
+    )
+
+    const result = await POST(
+      post({ action: "analyze", video: `https://youtu.be/${firstVideoId}` }),
+    )
+    const payload = await result.json()
+
+    expect(result.status).toBe(200)
+    expect(payload.analysis).toMatchObject({
+      insightSource: "openrouter",
+      insightSummary: providerInsight.summary,
+      themes: providerInsight.themes,
+      recommendations: providerInsight.recommendations,
+      sentiment: { positive: 34, neutral: 33, negative: 33, total: 3 },
+    })
+    expect(openRouterAuthorization).toBe("Bearer test-openrouter-key")
+    expect(JSON.stringify(payload)).not.toContain("test-openrouter-key")
   })
 
   it("loads real-shaped trending results with the selected region and category", async () => {

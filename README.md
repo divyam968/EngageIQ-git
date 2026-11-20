@@ -11,17 +11,18 @@ Copy `.env.example` to `.env.local` and set:
 | Variable | Required for | Default |
 | --- | --- | --- |
 | `YOUTUBE_API_KEY` | Live YouTube Data API v3 metrics and comments | None |
-| `OPENAI_API_KEY` | OpenAI audience analysis and recommendations | None |
-| `OPENAI_MODEL` | OpenAI Responses API model selection | `gpt-4o-mini` |
+| `OPENROUTER_API_KEY` | OpenRouter audience analysis and recommendations | None |
+| `OPENROUTER_MODEL` | OpenRouter chat model or router selection | `openrouter/free` |
 
 These are server-only variables. Do not add a `NEXT_PUBLIC_` prefix, commit
-`.env.local`, or print key values in logs. Without an OpenAI key, the app labels
+`.env.local`, or print key values in logs. Without an OpenRouter key, the app labels
 its transparent rule-based fallback. The sample demo is illustrative and is
 separately labeled from live YouTube results.
 
-OpenAI requests use the official JavaScript SDK and Responses API with
-structured JSON output, a 20-second timeout, no automatic retries, and
-`store: false`. Public comments submitted for AI analysis are capped at 100.
+OpenRouter requests use its OpenAI-compatible Chat Completions API with
+structured JSON output, a 20-second timeout, and no automatic retries. The
+default `openrouter/free` router selects an available free model. Public
+comments submitted for AI analysis are capped at 100.
 
 ## Development and verification
 
@@ -30,11 +31,12 @@ npm.cmd install
 npm.cmd run dev
 npm.cmd test
 npm.cmd run build
-npm.cmd run verify:openai
+npm.cmd run verify:openrouter
 ```
 
-`verify:openai` makes a real, small Responses API request. It requires a valid
-`OPENAI_API_KEY` in `.env.local`; it does not use a mocked model response.
+`verify:openrouter` makes a real, small Chat Completions request. It requires a
+valid `OPENROUTER_API_KEY` in `.env.local`; it does not use a mocked model
+response.
 
 ## Request limits
 

@@ -10,11 +10,11 @@ import {
 } from "@/lib/youtube"
 import { buildRuleBasedInsights } from "@/lib/insights"
 import {
-  configuredOpenAIModel,
-  generateOpenAIInsights,
-  isOpenAIConfigured,
-  OpenAIInsightError,
-} from "@/lib/openai-insights"
+  configuredOpenRouterModel,
+  generateOpenRouterInsights,
+  isOpenRouterConfigured,
+  OpenRouterInsightError,
+} from "@/lib/openrouter-insights"
 import { checkRequestRateLimit } from "@/lib/rate-limit"
 
 export const dynamic = "force-dynamic"
@@ -224,26 +224,26 @@ async function analyzeVideo(id: string): Promise<VideoAnalysis> {
   let insight = ruleInsights
   let insightSource: VideoAnalysis["insightSource"] = "rules"
 
-  if (isOpenAIConfigured() && comments.length > 0) {
+  if (isOpenRouterConfigured() && comments.length > 0) {
     try {
-      const generated = await generateOpenAIInsights(
+      const generated = await generateOpenRouterInsights(
         summary,
         comments.slice(0, 100),
       )
       if (generated) {
         insight = generated
-        insightSource = "openai"
+        insightSource = "openrouter"
       }
     } catch (error) {
       warnings.push(
-        error instanceof OpenAIInsightError
+        error instanceof OpenRouterInsightError
           ? `${error.message} Transparent rule-based insights are shown instead.`
-          : "OpenAI analysis failed. Transparent rule-based insights are shown instead.",
+          : "OpenRouter analysis failed. Transparent rule-based insights are shown instead.",
       )
     }
-  } else if (!isOpenAIConfigured()) {
+  } else if (!isOpenRouterConfigured()) {
     warnings.push(
-      "OpenAI is not configured; sentiment and recommendations use transparent keyword-based rules.",
+      "OpenRouter is not configured; sentiment and recommendations use transparent keyword-based rules.",
     )
   }
 
@@ -384,8 +384,8 @@ async function getChannel(query: string): Promise<ChannelAnalytics> {
 export async function GET() {
   return NextResponse.json({
     liveConfigured: Boolean(process.env.YOUTUBE_API_KEY?.trim()),
-    aiConfigured: isOpenAIConfigured(),
-    aiModel: configuredOpenAIModel(),
+    aiConfigured: isOpenRouterConfigured(),
+    aiModel: configuredOpenRouterModel(),
   })
 }
 
@@ -426,11 +426,11 @@ export async function POST(request: Request) {
     )
   }
 
-  if (body.action === "analyze" && isOpenAIConfigured()) {
-    const aiLimit = checkRequestRateLimit(`openai:${clientIp}`, 5)
+  if (body.action === "analyze" && isOpenRouterConfigured()) {
+    const aiLimit = checkRequestRateLimit(`openrouter:${clientIp}`, 5)
     if (!aiLimit.allowed) {
       return NextResponse.json(
-        { error: "OpenAI analysis is rate-limited. Try again shortly." },
+        { error: "OpenRouter analysis is rate-limited. Try again shortly." },
         {
           status: 429,
           headers: { "Retry-After": String(aiLimit.retryAfterSeconds) },
