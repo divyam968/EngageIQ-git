@@ -1,9 +1,15 @@
 node_modules/
 .next/
 out/
+dist/
+build/
+coverage/
 .vercel/
 *.tsbuildinfo
 .env*
 !.env.example
-npm-debug.log*
-.vercel
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
