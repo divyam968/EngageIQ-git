@@ -20,9 +20,13 @@ its transparent rule-based fallback. The sample demo is illustrative and is
 separately labeled from live YouTube results.
 
 OpenRouter requests use its OpenAI-compatible Chat Completions API with
-structured JSON output, a 20-second timeout, and no automatic retries. The
-default `openrouter/free` router selects an available free model. Public
-comments submitted for AI analysis are capped at 100.
+structured JSON output, a 50-second timeout, a bounded reasoning budget, and no
+automatic retries. The code defaults to `openrouter/free`; set `OPENROUTER_MODEL`
+to a specific compatible free model when deterministic model selection is
+needed. Vercel Production currently pins a verified free model because the
+dynamic router can select models that exhaust their output budget. Up to 200
+public comments may be collected, and AI analysis uses a visible 20-comment
+sample; the returned analysis reports the actual sample size.
 
 ## Development and verification
 
