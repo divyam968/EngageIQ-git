@@ -13,3 +13,4 @@ coverage/
 *.p12
 *.pfx
 *.log
+.vercel
