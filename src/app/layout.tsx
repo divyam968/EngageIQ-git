@@ -3,7 +3,7 @@ import "./globals.css"
 
 export const metadata: Metadata = {
   title: {
-    default: "EngageIQ | AI Engagement Analytics",
+    default: "EngageIQ — AI Engagement Analytics",
     template: "%s | EngageIQ",
   },
   description:
@@ -13,7 +13,7 @@ export const metadata: Metadata = {
     icon: "/icon.svg",
   },
   openGraph: {
-    title: "EngageIQ | AI Engagement Analytics",
+    title: "EngageIQ — AI Engagement Analytics",
     description:
       "Turn audience signals into a clearer content strategy with EngageIQ.",
     siteName: "EngageIQ",
