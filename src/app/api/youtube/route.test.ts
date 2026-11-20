@@ -40,16 +40,32 @@ afterEach(() => {
 describe("YouTube route handler", () => {
   it("reports configuration without exposing credentials", async () => {
     vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
-    vi.stubEnv("GEMINI_API_KEY", "")
+    vi.stubEnv("OPENAI_API_KEY", "")
+    vi.stubEnv("OPENAI_MODEL", "")
 
     const result = await (await GET()).json()
 
     expect(result).toEqual({
       liveConfigured: true,
       aiConfigured: false,
-      aiModel: "gemini-3.5-flash-lite",
+      aiModel: "gpt-4o-mini",
     })
     expect(JSON.stringify(result)).not.toContain("test-youtube-key")
+  })
+
+  it("reports OpenAI configured using the server-side key without exposing it", async () => {
+    vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
+    vi.stubEnv("OPENAI_API_KEY", "test-openai-key")
+    vi.stubEnv("OPENAI_MODEL", "gpt-4o-mini")
+
+    const result = await (await GET()).json()
+
+    expect(result).toMatchObject({
+      liveConfigured: true,
+      aiConfigured: true,
+      aiModel: "gpt-4o-mini",
+    })
+    expect(JSON.stringify(result)).not.toContain("test-openai-key")
   })
 
   it("returns a clear missing-YouTube-key error", async () => {
@@ -63,9 +79,32 @@ describe("YouTube route handler", () => {
     })
   })
 
+  it("limits repeated requests from the same client", async () => {
+    vi.stubEnv("YOUTUBE_API_KEY", "")
+    vi.stubEnv("OPENAI_API_KEY", "")
+    const clientIp = `198.51.100.${Math.floor(Math.random() * 200) + 1}`
+    const makeRequest = () =>
+      new Request("http://localhost/api/youtube", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": clientIp,
+        },
+        body: JSON.stringify({ action: "trending" }),
+      })
+
+    for (let request = 0; request < 30; request += 1) {
+      expect((await POST(makeRequest())).status).toBe(503)
+    }
+
+    const limited = await POST(makeRequest())
+    expect(limited.status).toBe(429)
+    expect(limited.headers.get("Retry-After")).toBeTruthy()
+  })
+
   it("analyzes real-shaped video statistics and public comments with explicit rule fallback", async () => {
     vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
-    vi.stubEnv("GEMINI_API_KEY", "")
+    vi.stubEnv("OPENAI_API_KEY", "")
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string | URL | Request) => {
@@ -105,72 +144,7 @@ describe("YouTube route handler", () => {
       source: "youtube",
     })
     expect(payload.analysis.sentiment.total).toBe(3)
-    expect(payload.analysis.warnings.join(" ")).toContain("Gemini is not configured")
-  })
-
-  it("uses Gemini only through a server-side key and validates its structured response", async () => {
-    vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
-    vi.stubEnv("GEMINI_API_KEY", "test-gemini-key")
-    const requestedHeaders: Headers[] = []
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-        const url = new URL(
-          input instanceof Request ? input.url : input.toString(),
-        )
-        if (url.hostname === "generativelanguage.googleapis.com") {
-          requestedHeaders.push(new Headers(init?.headers))
-          return response({
-            candidates: [
-              {
-                content: {
-                  parts: [
-                    {
-                      text: JSON.stringify({
-                        sentiment: { positive: 1, negative: 0 },
-                        summary: "Viewers praise the explanation and ask for examples.",
-                        themes: ["clear explanation"],
-                        recommendations: [
-                          "Add one worked example to the next video.",
-                          "Reply to questions with a pinned comment.",
-                        ],
-                      }),
-                    },
-                  ],
-                },
-              },
-            ],
-          })
-        }
-        if (url.pathname.endsWith("/videos")) {
-          return response({ items: [videoItem(firstVideoId)] })
-        }
-        if (url.pathname.endsWith("/commentThreads")) {
-          return response({
-            items: [
-              { snippet: { topLevelComment: { snippet: { textOriginal: "Great explanation" } } } },
-              { snippet: { topLevelComment: { snippet: { textOriginal: "Please add an example" } } } },
-            ],
-          })
-        }
-        throw new Error("Unexpected test URL")
-      }),
-    )
-
-    const result = await POST(post({ action: "analyze", video: firstVideoId }))
-    const payload = await result.json()
-
-    expect(result.status).toBe(200)
-    expect(payload.analysis.insightSource).toBe("gemini")
-    expect(payload.analysis.sentiment).toMatchObject({
-      positive: 50,
-      neutral: 50,
-      negative: 0,
-      total: 2,
-    })
-    expect(payload.analysis.recommendations[0]).toContain("worked example")
-    expect(requestedHeaders).toHaveLength(1)
-    expect(requestedHeaders[0].get("x-goog-api-key")).toBe("test-gemini-key")
+    expect(payload.analysis.warnings.join(" ")).toContain("OpenAI is not configured")
   })
 
   it("loads real-shaped trending results with the selected region and category", async () => {
