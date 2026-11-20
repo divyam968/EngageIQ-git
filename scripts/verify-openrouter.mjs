@@ -14,13 +14,11 @@ const schema = {
   type: "object",
   properties: {
     sentiment: {
-      type: "object",
-      properties: {
-        positive: { type: "integer", minimum: 0 },
-        negative: { type: "integer", minimum: 0 },
+      type: "array",
+      items: {
+        type: "string",
+        enum: ["positive", "neutral", "negative"],
       },
-      required: ["positive", "negative"],
-      additionalProperties: false,
     },
     summary: { type: "string" },
     themes: { type: "array", items: { type: "string" } },
@@ -47,7 +45,7 @@ try {
           {
             role: "system",
             content:
-              "Analyze the supplied public comments. Classify each exactly once as positive, neutral, or negative. Return positive and negative integer counts; neutral is derived by the application. Provide a concise evidence-based summary, themes, and at least two specific recommendations. Do not invent audience demographics or causes.",
+              "Analyze the supplied public comments. In input order, classify each exactly once as positive, neutral, or negative and return one label per comment. Provide a concise evidence-based summary, themes, and at least two specific recommendations. Do not invent audience demographics or causes. Return only the JSON object matching the requested schema; do not include reasoning or prose outside it.",
           },
           {
             role: "user",
@@ -72,12 +70,13 @@ try {
             schema,
           },
         },
-        max_tokens: 1200,
+        max_tokens: 3000,
         temperature: 0.2,
-        reasoning: { effort: "minimal", exclude: true },
+        reasoning: { max_tokens: 200, exclude: true },
+        provider: { require_parameters: true },
         stream: false,
       }),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(60_000),
     },
   )
 
@@ -99,6 +98,16 @@ try {
   } else {
     const payload = await response.json()
     const rawContent = payload?.choices?.[0]?.message?.content
+    const rawFinishReason = payload?.choices?.[0]?.finish_reason
+    const finishReason = [
+      "stop",
+      "length",
+      "content_filter",
+      "tool_calls",
+      "error",
+    ].includes(rawFinishReason)
+      ? rawFinishReason
+      : "unknown"
     const content =
       typeof rawContent === "string"
         ? rawContent
@@ -110,43 +119,66 @@ try {
               .join("")
           : ""
     if (!content.trim()) {
-      throw new Error("OpenRouter returned no structured response.")
+      throw new Error(
+        `OpenRouter returned no structured response (finish reason: ${finishReason}).`,
+      )
     }
 
-    const result = JSON.parse(content)
-    const positive = result.sentiment?.positive
-    const negative = result.sentiment?.negative
-    const neutral = comments.length - positive - negative
-    if (
-      !Number.isInteger(positive) ||
-      !Number.isInteger(negative) ||
-      positive < 0 ||
-      negative < 0 ||
-      neutral < 0 ||
-      typeof result.summary !== "string" ||
-      !result.summary.trim() ||
-      !Array.isArray(result.themes) ||
-      !result.themes.every((theme) => typeof theme === "string") ||
-      !Array.isArray(result.recommendations) ||
-      result.recommendations.length < 2 ||
-      result.recommendations.length > 4 ||
-      !result.recommendations.every(
+    let result
+    try {
+      result = JSON.parse(content)
+    } catch {
+      throw new Error("OpenRouter returned invalid JSON.")
+    }
+    const labelsValid =
+      Array.isArray(result.sentiment) &&
+      result.sentiment.length === comments.length &&
+      result.sentiment.every((label) =>
+        ["positive", "neutral", "negative"].includes(label),
+      )
+    const summaryValid =
+      typeof result.summary === "string" && result.summary.trim()
+    const themesValid =
+      Array.isArray(result.themes) &&
+      result.themes.every((theme) => typeof theme === "string")
+    const recommendationsValid =
+      Array.isArray(result.recommendations) &&
+      result.recommendations.length >= 2 &&
+      result.recommendations.length <= 4 &&
+      result.recommendations.every(
         (recommendation) =>
           typeof recommendation === "string" && recommendation.trim(),
       )
+    if (
+      !labelsValid ||
+      !summaryValid ||
+      !themesValid ||
+      !recommendationsValid
     ) {
-      throw new Error("OpenRouter returned an invalid structured response.")
+      throw new Error(
+        `OpenRouter returned invalid structured output (labels: ${Array.isArray(result.sentiment) ? result.sentiment.length : "missing"}, summary: ${Boolean(summaryValid)}, themes: ${Array.isArray(result.themes) ? result.themes.length : "missing"}, recommendations: ${Array.isArray(result.recommendations) ? result.recommendations.length : "missing"}).`,
+      )
     }
 
     console.log(
-      `OpenRouter live check passed: sentiment, summary, themes and recommendations (${comments.length} comments; model ${model}).`,
+      `OpenRouter live check passed: sentiment, summary, themes and recommendations (${comments.length} comments; routed model ${payload?.model ?? model}).`,
     )
   }
 } catch (error) {
   const timedOut =
     error instanceof Error && /timeout|abort/i.test(error.name + error.message)
-  console.error(timedOut
-    ? "OpenRouter live check timed out."
-    : "OpenRouter live check failed before receiving a valid response.")
+  const safeResponseError =
+    error instanceof Error &&
+    /^OpenRouter returned (no structured response \(finish reason: (stop|length|content_filter|tool_calls|error|unknown)\)\.|invalid JSON\.|invalid structured output \(labels: (missing|\d+), summary: (true|false), themes: (missing|\d+), recommendations: (missing|\d+)\)\.)$/.test(
+      error.message,
+    )
+      ? error.message
+      : null
+  console.error(
+    timedOut
+      ? "OpenRouter live check timed out."
+      : safeResponseError ??
+          "OpenRouter live check failed before receiving a valid response.",
+  )
   process.exitCode = 1
 }

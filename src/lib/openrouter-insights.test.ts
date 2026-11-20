@@ -24,7 +24,7 @@ const comments = [
 ]
 
 const insight = {
-  sentiment: { positive: 1, negative: 1 },
+  sentiment: ["positive", "negative", "neutral"],
   summary: "Viewers valued the examples and noted pacing concerns.",
   themes: ["examples"],
   recommendations: [
@@ -36,7 +36,12 @@ const insight = {
 function providerResponse(content: unknown, status = 200): Response {
   return new Response(
     JSON.stringify({
-      choices: [{ message: { content: JSON.stringify(content) } }],
+      choices: [
+        {
+          message: { content: JSON.stringify(content) },
+          finish_reason: "stop",
+        },
+      ],
     }),
     { status, headers: { "Content-Type": "application/json" } },
   )
@@ -85,6 +90,9 @@ describe("OpenRouter insights", () => {
         type: "json_schema",
         json_schema: { name: "engageiq_audience_insights", strict: true },
       },
+      max_tokens: 3000,
+      reasoning: { max_tokens: 200, exclude: true },
+      provider: { require_parameters: true },
     })
     expect(JSON.stringify(result)).not.toContain("test-openrouter-key")
   })
@@ -115,6 +123,7 @@ describe("OpenRouter insights", () => {
                     { type: "text", text: JSON.stringify(insight) },
                   ],
                 },
+                finish_reason: "stop",
               },
             ],
           }),
@@ -126,6 +135,40 @@ describe("OpenRouter insights", () => {
     await expect(generateOpenRouterInsights(video, comments)).resolves.toMatchObject({
       summary: insight.summary,
       recommendations: insight.recommendations,
+    })
+  })
+
+  it("reports token-limited empty provider output explicitly", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-openrouter-key")
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              { message: { content: null }, finish_reason: "length" },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    )
+
+    await expect(generateOpenRouterInsights(video, comments)).rejects.toMatchObject({
+      status: 502,
+      message: "OpenRouter returned no structured analysis (finish reason: length).",
+    })
+  })
+
+  it("rejects sentiment labels when the provider does not classify every comment once", async () => {
+    vi.stubEnv("OPENROUTER_API_KEY", "test-openrouter-key")
+    vi.stubGlobal("fetch", vi.fn(async () => providerResponse({
+      ...insight,
+      sentiment: ["positive", "unexpected", "neutral"],
+    })))
+
+    await expect(generateOpenRouterInsights(video, comments)).rejects.toMatchObject({
+      message: "OpenRouter returned invalid per-comment sentiment classifications.",
     })
   })
 

@@ -151,7 +151,7 @@ describe("YouTube route handler", () => {
     vi.stubEnv("YOUTUBE_API_KEY", "test-youtube-key")
     vi.stubEnv("OPENROUTER_API_KEY", "test-openrouter-key")
     const providerInsight = {
-      sentiment: { positive: 1, negative: 1 },
+      sentiment: ["positive", "negative", "neutral"],
       summary: "Viewers liked the examples but noted the pacing.",
       themes: ["examples"],
       recommendations: [
@@ -172,7 +172,10 @@ describe("YouTube route handler", () => {
           )
           return response({
             choices: [
-              { message: { content: JSON.stringify(providerInsight) } },
+              {
+                message: { content: JSON.stringify(providerInsight) },
+                finish_reason: "stop",
+              },
             ],
           })
         }

@@ -18,6 +18,7 @@ import {
 import { checkRequestRateLimit } from "@/lib/rate-limit"
 
 export const dynamic = "force-dynamic"
+export const maxDuration = 60
 
 const API_BASE = "https://www.googleapis.com/youtube/v3"
 
@@ -228,13 +229,24 @@ async function analyzeVideo(id: string): Promise<VideoAnalysis> {
     try {
       const generated = await generateOpenRouterInsights(
         summary,
-        comments.slice(0, 100),
+        comments.slice(0, 20),
       )
       if (generated) {
         insight = generated
         insightSource = "openrouter"
       }
     } catch (error) {
+      if (error instanceof OpenRouterInsightError) {
+        console.warn(
+          "OpenRouter analysis failed; transparent rule-based insights are shown instead.",
+          { status: error.status, reason: error.message },
+        )
+      } else {
+        console.warn(
+          "OpenRouter analysis failed; transparent rule-based insights are shown instead.",
+          { errorType: error instanceof Error ? error.name : "UnknownError" },
+        )
+      }
       warnings.push(
         error instanceof OpenRouterInsightError
           ? `${error.message} Transparent rule-based insights are shown instead.`
